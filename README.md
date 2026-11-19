@@ -1,25 +1,20 @@
-# README
+#### 🔐 Quy trình truyền nhận và hoạt động cụ thể:
 
-### `encoding(sound_ref, data_ref, type)`
+1. **Khởi tạo và Phân phối Khóa (Bởi Người Nhận):**
+   - **Người nhận** khởi tạo cặp khóa **RSA-2048**.
+   - **Người nhận** giấu **Public Key** của mình vào một file âm thanh bằng kỹ thuật LSB và gửi file âm thanh này đi cho người gửi.
 
-Nhận vào 1 file .txt hoặc file hình ảnh và dùng LSB để giấu thông tin vào file âm thanh.
+2. **Chuẩn bị và Mã hóa Dữ liệu (Bởi Người Gửi):**
+   - **Người gửi** nhận file âm thanh, trích xuất **Public Key** của người nhận từ file đó.
+   - **Người gửi** mã hóa dữ liệu gốc (văn bản `.txt` hoặc hình ảnh `.jpg`) bằng thuật toán **AES-GCM (128-bit)** để tạo ra `ciphertext`, `key`, `nonce`, và `tag`.
+   - **Người gửi** bảo vệ thông tin giải mã AES (`key` + `nonce` + `tag` = 48 bytes) bằng cách mã hóa nó bằng **RSA Public Key** vừa trích xuất được.
 
-**Tham số:**
-- `sound_ref` (`str`): Đường dẫn đến file âm thanh cần được giấu tin vào.
-- `data_ref` (`str`): Đường dẫn đến file text/hình ảnh cần được nhúng.
-- `type` (`str`): Nhập vào 'text' nếu file cần nhúng là .txt, nhập vào 'image' nếu file cần nhúng là hình ảnh.
+3. **Nhúng dữ liệu mật vào file WAV (Bởi Người Gửi):**
+   - **Khóa RSA đã mã hóa** (2048 bits) được giấu vào các byte đầu tiên của file âm thanh.
+   - **Header kích thước dữ liệu (Data Size)** (32 bits) được giấu tiếp theo.
+   - **Dữ liệu mã hóa (Ciphertext)** được giấu vào phần còn lại của file âm thanh và gửi file âm thanh mật này lại cho người nhận.
 
-**Output:**
-- Tạo file âm thanh đã được nhúng trong folder `outputs`.
-
-
-### `decoding(sound_ref, type)`
-
-Nhận vào 1 file âm thanh .wav chứa thông tin đã được nhúng bên trong và trích xuất thông tin đó.
-
-**Tham số:**
-- `sound_ref` (`str`): Đường dẫn đến file âm thanh chứa thông tin đã được giấu bên trong.
-- `type` (`str`): Nhập vào 'text' nếu thông tin bên trong là text, nhập vào 'image' nếu thông tin bên trong là hình ảnh.
-
-**Output:**
-- Tạo file text hoặc hình ảnh đã được trích xuất trong folder `outputs`.
+4. **Giải mã và Khôi phục tin (Bởi Người Nhận):**
+   - **Người nhận** nhận file âm thanh chứa tin mật.
+   - Trích xuất khóa RSA bị mã hóa, sử dụng **Private Key** (giữ bí mật ở phía mình) để giải mã lấy lại `key`, `nonce`, và `tag` của AES.
+   - Trích xuất và giải mã dữ liệu `ciphertext` bằng khóa AES vừa khôi phục để thu về file gốc ban đầu.
