@@ -1,232 +1,178 @@
 import wave as w
 import os
-
-# Đọc file hình ảnh và chuyển thành chuỗi bits
-def img_to_bits(path):
-    with open(path, 'rb') as img_file:
-        img_data = img_file.read()
-        return ''.join(format(data, '08b') for data in img_data)
-
-# Chuyển từ chuỗi bits thành file hình ảnh
-def bits_to_img(bits):
-    with open('outputs/retrive_img.jpg', 'wb') as img_file:
-        img_file.write(bits)
-    print("Đã tạo file 'retrive_img.jpg' thành công")
-
-# Đọc file txt và chuyển thành chuỗi bits
-def text_to_bytes(path):
-    with open(path, "r", encoding="utf-8") as text_file:
-        content = text_file.read()
-
-    byte = content.encode('utf-8')    # Chuyển từ plain text sang dạng số theo bảng mã utf-8
-
-    return byte    # Chuyển từ dãy số sang dạng dãy số nhị phân với 8 bits
-
-# Chuyển từ chuỗi bits thành file txt
-def bits_to_text(bits):
-    with open('outputs/retrive_text.txt', 'wb') as text_file:
-        text_file.write(bits)
-    print("Đã tạo file 'retrive_text.txt' ở folder 'outputs' thành công.")
-
-def AES_encode(byte, KEY=16):
-  key = get_random_bytes(KEY)
-
-  cipher = AES.new(key, AES.MODE_GCM)
-
-  ciphertext, tag = cipher.encrypt_and_digest(byte)
-  nonce = cipher.nonce
-
-  return ''.join(format(byte, '08b') for byte in ciphertext), key, nonce, tag
-
-
-#----------------------Encoding Phase----------------------
-
-def encoding(sound_ref, data_ref, public_key, type='text', SIZE=32, AES_KEY=16, TAG=16, NONCE=16, RSA_KEY=2048):
-  sound = w.open(sound_ref, 'rb')
-
-  sound_data = bytearray(sound.readframes(sound.getnframes()))
-
-  if type == 'image':
-    plain_data = img_to_bits(data_ref)
-
-  elif type == 'text':
-    plain_data = text_to_bits(data_ref)
-
-  cipherbit, key, nonce, tag = AES_encode(plain_data, AES_KEY)
-  combined = key + nonce + tag
-
-  key_encrypted = RSA_encrypt(combined, public_key)
-
-  # Giấu key
-  sound_index = 0
-  for bit in key_encrypted:
-    replace = (sound_data[sound_index] & 254) | int(bit)
-    sound_data[sound_index] = replace
-    sound_index += 2
-
-  # Header Size
-  size = str(format(len(cipherbit), f'0{SIZE}b'))
-  sound_index = RSA_KEY*2
-  for bit in size:
-    replace = (sound_data[sound_index] & 254) | int(bit)
-    sound_data[sound_index] = replace
-    sound_index += 2
-
-
-  # Stenography
-  capacity = (len(sound_data) - SIZE*2 - RSA_KEY*2) // 2
-  if len(cipherbit) < capacity:
-    sound_index = SIZE*2 + RSA_KEY*2
-    for bit in cipherbit:
-      replace = (sound_data[sound_index] & 254) | int(bit)
-      sound_data[sound_index] = replace
-      sound_index += 2
-  else:
-    print(f'Độ dài của {type} vượt quá {capacity}bytes sức chứa của file .wav')
-
-  # Tạo folder 'outputs' nếu chưa có
-  os.makedirs('outputs', exist_ok=True)
-
-  new_sound = w.open('outputs/encrypted_sound.wav', 'wb')
-  new_sound.setparams(sound.getparams())
-  new_sound.writeframes(sound_data)
-
-  print("Đã tạo file 'encrypted_sound.wav' ở folder 'outputs' thành công.")
-
-  sound.close()
-  new_sound.close()
-
-
-
-#----------------------Decoding Phase----------------------
-
-def decoding(sound_ref, type, private_key, SIZE=32, AES_KEY=16, TAG=16, NONCE=16):
-  encrypted_sound = w.open(sound_ref, 'rb')
-
-  sound_data = bytearray(encrypted_sound.readframes(encrypted_sound.getnframes()))
-
-  # Get Data Size
-  size = [str(sound_data[i] & 1) for i in range(0, SIZE*2, 2)]
-  size = int(''.join(size), 2)
-
-  # Retrive Data
-  data = [str(sound_data[i] & 1) for i in range(SIZE*2, SIZE*2 + size*2, 2)]
-  data = ''.join(data)
-
-  bits_data = bytes(int(data[i:i + 8], 2) for i in range(0, len(data), 8))
-
-  # Tạo folder 'outputs' nếu chưa có
-  os.makedirs('outputs', exist_ok=True)
-
-  if type == 'image':
-    bits_to_img(bits_data)
-
-  elif type == 'text':
-    return bits_to_text(bits_data)
-
-  encrypted_sound.close()
-
-encoding('sound.wav', 'text.txt', type='text')
-
-decoding('outputs/encrypted_sound.wav', type='text')
-
-!pip install pycryptodome
-
-from Crypto.Cipher import AES
+import numpy as np
+from Crypto.Cipher import AES, PKCS1_OAEP
 from Crypto.PublicKey import RSA
-from Crypto.Cipher import PKCS1_OAEP
 from Crypto.Random import get_random_bytes
 
-# độ dài header quy định độ dài data: 4 bytes = 32 bits
-# độ dài key: 16 bytes = 128 bits
-# độ dài nonce: 16 bytes = 128 bits
-# độ dài tag: 16 bytes = 128 bits
+os.makedirs('outputs', exist_ok=True)
+os.makedirs('RSA_keys', exist_ok=True)
 
-# tổng: 416 bits
+def bytes_to_bits(data_bytes):
+    return ''.join(format(b, '08b') for b in data_bytes)
 
-# RSA key: 2048 bits
+def bits_to_bytes(bits_str):
+    return bytes(int(bits_str[i:i+8], 2) for i in range(0, len(bits_str), 8))
 
-text = 'thông diep bi mat looooooooooooooooooooooooo'
+def validate_wav(sound_ref):
+    """Kiểm tra định dạng WAV PCM 16-bit theo FR-01, FR-02."""
+    try:
+        with w.open(sound_ref, 'rb') as sound:
+            params = sound.getparams()
+            if params.comptype != 'NONE' or params.sampwidth != 2:
+                raise ValueError(f"Định dạng không hỗ trợ: Yêu cầu WAV PCM 16-bit (File hiện tại: {params.sampwidth*8}-bit, nén: {params.comptype}).")
+            return params
+    except w.Error:
+        raise ValueError("Tệp tải lên không phải định dạng RIFF/WAVE hợp lệ.")
 
-key = get_random_bytes(16)
+def calculate_snr(cover_path, stego_path):
+    """Tính chỉ số SNR (dB) giữa file gốc và file Stego theo Phụ lục A (AC-02)."""
+    with w.open(cover_path, 'rb') as f1, w.open(stego_path, 'rb') as f2:
+        s1 = np.frombuffer(f1.readframes(f1.getnframes()), dtype=np.int16).astype(np.float64)
+        s2 = np.frombuffer(f2.readframes(f2.getnframes()), dtype=np.int16).astype(np.float64)
+    
+    noise = s1 - s2
+    noise_power = np.sum(noise ** 2)
+    if noise_power == 0:
+        return float('inf')
+    signal_power = np.sum(s1 ** 2)
+    return 10 * np.log10(signal_power / noise_power)
 
-cipher = AES.new(key, AES.MODE_GCM)
+def calculate_cer(orig_bytes, rec_bytes):
+    """Tính tỷ lệ lỗi byte/ký tự (AC-01)."""
+    if orig_bytes == rec_bytes:
+        return 0.0
+    max_len = max(len(orig_bytes), len(rec_bytes))
+    if max_len == 0:
+        return 0.0
+    diffs = sum(a != b for a, b in zip(orig_bytes, rec_bytes)) + abs(len(orig_bytes) - len(rec_bytes))
+    return (diffs / max_len) * 100.0
 
-ciphertext, tag = cipher.encrypt_and_digest(text.encode('utf-8'))
-nonce = cipher.nonce
+# --- 1. Sinh Khóa RSA & Nhúng Public Key ---
+def generate_and_hide_public_key(sound_ref, out_sound_ref='outputs/public_key_carrier.wav'):
+    params = validate_wav(sound_ref)
+    
+    key = RSA.generate(2048)
+    private_key = key.export_key(format='DER')
+    public_key = key.publickey().export_key(format='DER')
+    
+    with open('RSA_keys/private_key.pem', 'wb') as f:
+        f.write(private_key)
 
-print(f'key: {key}')
-print(f'nonce: {nonce}')
-print(f'ciphertext: {ciphertext}')
-print(f'tag: {tag}')
+    with w.open(sound_ref, 'rb') as sound:
+        sound_data = bytearray(sound.readframes(sound.getnframes()))
 
-print(''.join(format(byte, '08b') for byte in key))
+    pub_bits = bytes_to_bits(public_key)
+    pub_len = len(pub_bits)
+    
+    if (32 + pub_len) > len(sound_data) // 2:
+        raise ValueError("File âm thanh quá ngắn để chứa Public Key RSA-2048!")
 
-decipher = AES.new(key, AES.MODE_GCM, nonce=nonce)
+    len_bits = format(pub_len, '032b')
+    idx = 0
+    for bit in len_bits:
+        sound_data[idx] = (sound_data[idx] & 254) | int(bit)
+        idx += 2
 
-plaintext = decipher.decrypt(ciphertext)
-print(type(ciphertext))
+    for bit in pub_bits:
+        sound_data[idx] = (sound_data[idx] & 254) | int(bit)
+        idx += 2
 
-print(plaintext.decode('utf-8'))
+    with w.open(out_sound_ref, 'wb') as out_sound:
+        out_sound.setparams(params)
+        out_sound.writeframes(sound_data)
+    return out_sound_ref
 
-def text_to_bits(path, KEY):
-  with open(path, "r", encoding="utf-8") as text_file:
-    content = text_file.read()
+# --- 2. Trích xuất Public Key ---
+def extract_public_key(sound_ref):
+    validate_wav(sound_ref)
+    with w.open(sound_ref, 'rb') as sound:
+        sound_data = bytearray(sound.readframes(sound.getnframes()))
 
-  encode = content.encode('utf-8')
+    len_bits = ''.join(str(sound_data[i] & 1) for i in range(0, 64, 2))
+    pub_len = int(len_bits, 2)
+    
+    if pub_len <= 0 or (64 + pub_len * 2) > len(sound_data):
+        raise ValueError("Không tìm thấy Public Key hợp lệ trong file âm thanh này.")
 
-  key = get_random_bytes(KEY)
+    pub_bits = ''.join(str(sound_data[i] & 1) for i in range(64, 64 + pub_len * 2, 2))
+    return bits_to_bytes(pub_bits)
 
-  cipher = AES.new(key, AES.MODE_GCM)
+# --- 3. Mã hóa & Giấu Tin Mật ---
+def encoding_secure(carrier_key_sound, plain_bytes, output_sound_ref='outputs/encrypted_sound.wav'):
+    params = validate_wav(carrier_key_sound)
+    public_key_der = extract_public_key(carrier_key_sound)
+    public_key = RSA.importKey(public_key_der)
 
-  ciphertext, tag = cipher.encrypt_and_digest(encode)
-  nonce = cipher.nonce
+    # Mã hóa AES-GCM
+    aes_key = get_random_bytes(16)
+    cipher_aes = AES.new(aes_key, AES.MODE_GCM)
+    ciphertext, tag = cipher_aes.encrypt_and_digest(plain_bytes)
+    nonce = cipher_aes.nonce
 
-  return ''.join(format(word, '08b') for word in encode)
+    # Mã hóa RSA cho khóa phiên
+    combined_keys = aes_key + nonce + tag
+    cipher_rsa = PKCS1_OAEP.new(public_key)
+    rsa_encrypted_bytes = cipher_rsa.encrypt(combined_keys)
 
-content = text_to_bits('text.txt')
+    rsa_encrypted_bits = bytes_to_bits(rsa_encrypted_bytes)
+    ciphertext_bits = bytes_to_bits(ciphertext)
+    size_bits = format(len(ciphertext_bits), '032b')
 
-def create_RSA_keys():
-  key = RSA.generate(2048)
+    with w.open(carrier_key_sound, 'rb') as sound:
+        sound_data = bytearray(sound.readframes(sound.getnframes()))
 
-  private_key = key.export_key(format='DER')
-  public_key = key.publickey().export_key(format='DER')
+    total_bits_needed = len(rsa_encrypted_bits) + len(size_bits) + len(ciphertext_bits)
+    max_capacity_bits = len(sound_data) // 2
 
-  # Tạo thư mục RSA_keys nếu chưa tồn tại
-  os.makedirs('RSA_keys', exist_ok=True)
+    # Kiểm tra sức chứa TRƯỚC khi ghi (FR-10, FR-11)
+    if total_bits_needed > max_capacity_bits:
+        raise OverflowError(f"Vượt quá sức chứa! Cần {total_bits_needed} bits nhưng file WAV chỉ chứa tối đa {max_capacity_bits} bits.")
 
-  # Tạo 2 file keys lưu vào RSA_keys
-  with open('RSA_keys/private_key.pem', 'wb') as private_key_file:
-    private_key_file.write(private_key)
+    full_bits = rsa_encrypted_bits + size_bits + ciphertext_bits
+    idx = 0
+    for bit in full_bits:
+        sound_data[idx] = (sound_data[idx] & 254) | int(bit)
+        idx += 2
 
-  with open('RSA_keys/public_key.pem', 'wb') as public_key_file:
-    public_key_file.write(public_key)
+    with w.open(output_sound_ref, 'wb') as out_sound:
+        out_sound.setparams(params)
+        out_sound.writeframes(sound_data)
+    return output_sound_ref, total_bits_needed, max_capacity_bits
 
-with open('text.txt', 'r') as f:
-  text = f.read()
+# --- 4. Giải Mã & Khôi Phục ---
+def decoding_secure(encrypted_sound_ref, private_key_der):
+    validate_wav(encrypted_sound_ref)
+    private_key = RSA.importKey(private_key_der)
 
-# Đọc public key từ file .pem
-with open('RSA_keys/public_key.pem', 'rb') as f:
-  public_key = f.read()
+    with w.open(encrypted_sound_ref, 'rb') as sound:
+        sound_data = bytearray(sound.readframes(sound.getnframes()))
 
-def RSA_encrypt(plaintext, public_key):
-  # Chuyển key chuỗi bytes thành key sử dụng được
-  public_key = RSA.importKey(public_key)
+    if len(sound_data) < 4160:
+        raise ValueError("File âm thanh quá ngắn, không chứa dữ liệu mã hóa.")
 
-  cipher_encrypt = PKCS1_OAEP.new(public_key)
+    # 1. Trích xuất RSA Encrypted Keys (2048 bits)
+    rsa_bits = ''.join(str(sound_data[i] & 1) for i in range(0, 4096, 2))
+    rsa_encrypted_bytes = bits_to_bytes(rsa_bits)
 
-  ciphertext = cipher_encrypt.encrypt(plaintext)
- 
-  return ''.join(format(byte, '08b') for byte in ciphertext)
+    cipher_rsa = PKCS1_OAEP.new(private_key)
+    combined_keys = cipher_rsa.decrypt(rsa_encrypted_bytes)
+    
+    aes_key = combined_keys[0:16]
+    nonce = combined_keys[16:32]
+    tag = combined_keys[32:48]
 
-byte = bytes(int(bit[i:i + 8], 2) for i in range(0, len(bit), 8))
+    # 2. Trích xuất độ dài Ciphertext (32 bits)
+    size_bits = ''.join(str(sound_data[i] & 1) for i in range(4096, 4160, 2))
+    ciphertext_len = int(size_bits, 2)
 
-with open('RSA_keys/private_key.pem', 'rb') as f:
-  private_key = f.read()
+    if ciphertext_len <= 0 or (4160 + ciphertext_len * 2) > len(sound_data) or ciphertext_len % 8 != 0:
+        raise ValueError("Header độ dài dữ liệu không hợp lệ hoặc file đã bị hỏng.")
 
-def RSA_decrypt(ciphertext, private_key):
-  private_key = RSA.importKey(private_key)
+    # 3. Trích xuất và giải mã Ciphertext
+    ciphertext_bits = ''.join(str(sound_data[i] & 1) for i in range(4160, 4160 + ciphertext_len * 2, 2))
+    ciphertext = bits_to_bytes(ciphertext_bits)
 
-  cipher_decrypt = PKCS1_OAEP.new(private_key)
-
-  plaintext = cipher_decrypt.decrypt(ciphertext)
+    cipher_aes = AES.new(aes_key, AES.MODE_GCM, nonce=nonce)
+    decrypted_bytes = cipher_aes.decrypt_and_verify(ciphertext, tag)
+    return decrypted_bytes
