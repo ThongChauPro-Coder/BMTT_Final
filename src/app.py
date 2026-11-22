@@ -1,7 +1,7 @@
 import streamlit as st
 import time
 import os
-from stego_core import (
+from main import (
     generate_and_hide_public_key,
     encoding_secure,
     decoding_secure,
